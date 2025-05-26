@@ -1,81 +1,147 @@
 import { useState, useEffect } from 'react';
 import { Chess } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
-import { Box, TextField, Button, Stack, LinearProgress, Typography } from '@mui/material';
-import Stockfish from 'stockfish';
+import { Box, Button, Stack, Typography, Alert, Chip, CircularProgress } from '@mui/material';
+import { Problem, loadProblems, getRandomProblem } from '../data/problems';
 
 const ChessboardComponent = () => {
   const [game, setGame] = useState(new Chess());
-  const [fen, setFen] = useState(game.fen());
-  const [evaluation, setEvaluation] = useState<number>(0);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [engine, setEngine] = useState<any>(null);
+  const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
+  const [message, setMessage] = useState<string>('');
+  const [currentProblem, setCurrentProblem] = useState<Problem | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [boardOrientation, setBoardOrientation] = useState<'white' | 'black'>('white');
 
   useEffect(() => {
-    // Initialiser Stockfish
-    const stockfish = new Stockfish();
-    setEngine(stockfish);
-
-    // Configurer les handlers de messages
-    stockfish.onmessage = (event: any) => {
-      const message = event.data;
-      if (message.includes('cp ')) {
-        // Extraire l'évaluation en centipawns
-        const cp = parseInt(message.split('cp ')[1].split(' ')[0]);
-        setEvaluation(cp / 100); // Convertir en pawns
+    let isMounted = true;
+    const init = async () => {
+      try {
+        console.log('Initializing chessboard component...');
+        await loadProblems();
+        if (isMounted) {
+          loadProblem();
+          setIsLoading(false);
+        }
+      } catch (err) {
+        console.error('Failed to initialize:', err);
+        if (isMounted) {
+          setError('Erreur lors du chargement des problèmes. Veuillez rafraîchir la page.');
+          setIsLoading(false);
+        }
       }
     };
-
+    init();
     return () => {
-      stockfish.terminate();
+      isMounted = false;
     };
   }, []);
 
-  const handleFenChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    setFen(event.target.value);
+  const loadProblem = () => {
+    console.log('Loading new problem...');
+    const problem = getRandomProblem();
+    if (!problem) {
+      console.log('No problem available');
+      return;
+    }
+
+    console.log('Loading problem:', problem.id);
+    const newGame = new Chess(problem.fen);
+    setGame(newGame);
+    setCurrentProblem(problem);
+    setCurrentMoveIndex(0);
+    setMessage('');
+    setBoardOrientation(newGame.turn() === 'w' ? 'black' : 'white');
+
+    setTimeout(() => makeOpponentMove(problem, newGame, 0), 1000);
   };
 
-  const loadPosition = () => {
+  const makeOpponentMove = (problem: Problem, currentGame: Chess, currentMoveIndex: number) => {
+    if (currentMoveIndex >= problem.moves.length - 1) return;
+
+    const opponentMove = problem.moves[currentMoveIndex];
+    const from = opponentMove.substring(0, 2);
+    const to = opponentMove.substring(2, 4);
+
     try {
-      const newGame = new Chess(fen);
-      setGame(newGame);
+      console.log(currentGame.fen())
+      console.log('Opponent move:', opponentMove, 'at index:', currentMoveIndex);
+      currentGame.move({ from, to, promotion: 'q' });
+      setGame(new Chess(currentGame.fen()));
+      setCurrentMoveIndex(currentMoveIndex + 1);
+      setMessage('Trouvez le meilleur coup !');
     } catch (error) {
-      console.error('Invalid FEN:', error);
+      console.error('Error making opponent move:', error);
     }
   };
 
-  const analyzePosition = () => {
-    if (!engine) return;
+  const checkMove = (from: string, to: string, game: Chess) => {
+    if (!currentProblem) return false;
+    
+    const move = `${from}${to}`;
+    const expectedMove = currentProblem.moves[currentMoveIndex];
+    console.log('Player move:', move, 'expected:', expectedMove, 'at index:', currentMoveIndex);
 
-    setIsAnalyzing(true);
-    setEvaluation(0);
-
-    // Configurer l'analyse
-    engine.postMessage('position fen ' + game.fen());
-    engine.postMessage('go depth 20');
+    if (move === expectedMove) {
+      if (currentMoveIndex === currentProblem.moves.length - 1) {
+        setMessage('Bravo ! Vous avez résolu le problème !');
+        return true;
+      } else {
+        setMessage('Bien joué ! Continuez...');
+        setTimeout(() => makeOpponentMove(currentProblem, game, currentMoveIndex + 1), 1000);
+        return true;
+      }
+    } else {
+      setMessage('Ce n\'est pas le bon coup. Essayez encore !');
+      return false;
+    }
   };
 
-  const stopAnalysis = () => {
-    if (!engine) return;
-
-    engine.postMessage('stop');
-    setIsAnalyzing(false);
+  const handleShowSolution = () => {
+    if (!currentProblem) return;
+    setMessage('Solution : ' + currentProblem.moves.join(' → '));
   };
 
-  // Convertir l'évaluation en pourcentage pour la barre de progression
-  const getEvaluationPercentage = () => {
-    // Convertir l'évaluation en une valeur entre 0 et 100
-    // On suppose que l'évaluation est entre -10 et 10 pawns
-    const normalizedEval = (evaluation + 10) / 20;
-    return Math.min(Math.max(normalizedEval * 100, 0), 100);
-  };
+  if (isLoading) {
+    return (
+      <Stack spacing={2} alignItems="center" justifyContent="center" height="100vh">
+        <CircularProgress />
+        <Typography>Chargement des problèmes...</Typography>
+      </Stack>
+    );
+  }
+
+  if (error) {
+    return (
+      <Stack spacing={2} alignItems="center" justifyContent="center" height="100vh">
+        <Alert severity="error">{error}</Alert>
+        <Button variant="contained" onClick={() => window.location.reload()}>
+          Rafraîchir la page
+        </Button>
+      </Stack>
+    );
+  }
 
   return (
     <Stack spacing={2} alignItems="center">
+      {currentProblem && (
+        <>
+          <Stack direction="row" spacing={1}>
+            <Typography variant="h6">Problème #{currentProblem.id}</Typography>
+            <Chip label={`Elo: ${currentProblem.rating}`} color="primary" />
+          </Stack>
+          <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent="center">
+            {currentProblem.themes.map((theme, index) => (
+              <Chip key={index} label={theme} size="small" />
+            ))}
+          </Stack>
+        </>
+      )}
       <Box sx={{ width: '600px', maxWidth: '100%' }}>
         <Chessboard
           position={game.fen()}
           boardWidth={600}
+          boardOrientation={boardOrientation}
           onPieceDrop={(sourceSquare, targetSquare) => {
             try {
               const move = game.move({
@@ -83,45 +149,41 @@ const ChessboardComponent = () => {
                 to: targetSquare,
                 promotion: 'q'
               });
+              
               if (move === null) return false;
+              
+              if (checkMove(sourceSquare, targetSquare, game)) {
+                setGame(new Chess(game.fen()));
+                return true;
+              }
+              
+              // Si le coup est incorrect, annuler le mouvement
+              game.undo();
               setGame(new Chess(game.fen()));
-              return true;
+              return false;
             } catch {
               return false;
             }
           }}
         />
       </Box>
-      <Stack direction="row" spacing={2} width="100%" maxWidth="600px">
-        <TextField
-          label="FEN Position"
-          value={fen}
-          onChange={handleFenChange}
-          variant="outlined"
-          size="small"
-          fullWidth
-        />
-        <Button variant="contained" onClick={loadPosition}>
-          Load Position
+      <Stack direction="row" spacing={2}>
+        <Button variant="contained" onClick={loadProblem}>
+          Nouveau Problème
         </Button>
         <Button 
           variant="contained" 
-          onClick={isAnalyzing ? stopAnalysis : analyzePosition}
-          color={isAnalyzing ? "error" : "primary"}
+          onClick={handleShowSolution}
+          color="secondary"
         >
-          {isAnalyzing ? "Stop Analysis" : "Analyze"}
+          Voir la Solution
         </Button>
       </Stack>
-      <Box width="100%" maxWidth="600px">
-        <LinearProgress 
-          variant="determinate" 
-          value={getEvaluationPercentage()} 
-          sx={{ height: 10, borderRadius: 5 }}
-        />
-        <Typography variant="body2" align="center" mt={1}>
-          Evaluation: {evaluation.toFixed(2)} pawns
-        </Typography>
-      </Box>
+      {message && (
+        <Alert severity={message.includes('Bravo') ? 'success' : 'info'}>
+          {message}
+        </Alert>
+      )}
     </Stack>
   );
 };
